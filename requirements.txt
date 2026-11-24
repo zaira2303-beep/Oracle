@@ -1,1 +1,1 @@
-vk-teams-async-bot
+vk-teams-async-bot==0.2.6
