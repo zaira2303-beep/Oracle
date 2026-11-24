@@ -133,7 +133,7 @@ def get_random_image(folder_path):
 
 
 @dp.message(CommandFilter("start"))
-async def cmd_start(event: NewMessageEvent, fsm_context: FSMContext):
+async def cmd_start(event: NewMessageEvent, bot: Bot, fsm_context: FSMContext):
     user_id = event.from_.user_id
     log.info("/start от %s (chat_id=%s)", user_id, event.chat.chat_id)
 
@@ -152,7 +152,7 @@ async def cmd_start(event: NewMessageEvent, fsm_context: FSMContext):
 
 
 @dp.message(StateFilter(PredictionStates.waiting_for_number))
-async def process_number(event: NewMessageEvent, fsm_context: FSMContext):
+async def process_number(event: NewMessageEvent, bot: Bot, fsm_context: FSMContext):
     user_id = event.from_.user_id
     text = (event.text or "").strip()
 
@@ -197,7 +197,7 @@ async def process_number(event: NewMessageEvent, fsm_context: FSMContext):
 
 
 @dp.message(StateFilter(None))
-async def ask_to_start(event: NewMessageEvent):
+async def ask_to_start(event: NewMessageEvent, bot: Bot):
     await bot.send_text(
         chat_id=event.chat.chat_id,
         text="Напиши /start, чтобы узнать предсказание.",
