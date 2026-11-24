@@ -23,7 +23,7 @@ log = logging.getLogger("oracle")
 IMAGES_FOLDER = "images"
 USED_USERS_FILE = "used_users.json"
 
-GREETING_EMOJI = ["👋", "🔮", "✨", "🌟"]
+GREETING_EMOJI = ["🔮", "✨", "🌟", "🎁", "🍀", "🪄", "💫", "🌠"]
 
 
 def load_dotenv(path=".env"):
@@ -146,14 +146,15 @@ async def deliver_prediction(message: Message, user_id: str) -> None:
 async def start_dialogue(message: Message, state: FSMContext, user_id: str) -> None:
     if user_id in used_users:
         await message.answer(
-            "Твое будущее уже предсказано. Второй раз судьба не открывает свои тайны."
+            "🔮 Твое будущее уже предсказано. Второй раз судьба не открывает свои тайны."
         )
         return
 
+    emoji = random.choice(GREETING_EMOJI)
     await state.set_state(PredictionStates.waiting_for_number)
     await message.answer(
-        f"{random.choice(GREETING_EMOJI)} Привет! Я — древний оракул. "
-        "Загадай любое число от 1 до 100, и я приоткрою завесу твоего будущего."
+        f"{emoji} Привет! Я — древний оракул. "
+        "Загадай любое число от 1 до 100, и я приоткрою завесу твоего будущего. ✨"
     )
 
 
@@ -170,7 +171,7 @@ async def process_number(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
 
     if user_id in used_users:
-        await message.answer("Твое будущее уже предсказано.")
+        await message.answer("🔮 Твое будущее уже предсказано.")
         return
 
     try:
@@ -178,7 +179,7 @@ async def process_number(message: Message, state: FSMContext) -> None:
         if not 1 <= number <= 100:
             raise ValueError
     except ValueError:
-        await message.answer("Пожалуйста, введи число от 1 до 100.")
+        await message.answer("🔮 Пожалуйста, введи число от 1 до 100.")
         return
 
     await deliver_prediction(message, user_id)
