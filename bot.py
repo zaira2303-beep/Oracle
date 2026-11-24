@@ -15,6 +15,7 @@ from vk_teams_async_bot import (
     StateFilter,
     StatesGroup,
 )
+from vk_teams_async_bot.errors import APIError
 
 from predictions import PREDICTIONS
 
@@ -55,18 +56,37 @@ def normalize_api_url(url):
     return url
 
 
+def clean_env_value(value):
+    """Убирает кавычки и пробелы, которые попадают из .env / docker-compose."""
+    value = (value or "").strip()
+    while len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1].strip()
+    return value.replace("\n", "").replace("\r", "").strip()
+
+
 load_dotenv()
 
-BOT_TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
+BOT_TOKEN = clean_env_value(os.getenv("BOT_TOKEN"))
 if not BOT_TOKEN:
     raise SystemExit(
         "BOT_TOKEN не задан: добавь BOT_TOKEN=<токен Метабота> в .env "
         "или передай его переменной окружения контейнера."
     )
+if BOT_TOKEN == "ВАШ_ТОКЕН_БОТА" or len(BOT_TOKEN) < 20:
+    raise SystemExit(
+        "BOT_TOKEN выглядит как заглушка или обрезан "
+        f"(длина {len(BOT_TOKEN)}, ожидается полный токен из Метабота)."
+    )
 
-BOT_API_URL = normalize_api_url(os.getenv("BOT_API_URL") or "https://myteam.mail.ru")
+BOT_API_URL = normalize_api_url(
+    clean_env_value(os.getenv("BOT_API_URL")) or "https://api.internal.myteam.mail.ru"
+)
 
 bot = Bot(bot_token=BOT_TOKEN, url=BOT_API_URL)
+log.info(
+    "Сервер: %s, токен: длина %d, начинается на %s…",
+    BOT_API_URL, len(BOT_TOKEN), BOT_TOKEN[:4],
+)
 dp = Dispatcher(storage=MemoryStorage())
 
 # --- СОСТОЯНИЕ «УЖЕ ГАДАЛИ» (переживает рестарт) ---
@@ -187,7 +207,16 @@ async def ask_to_start(event: NewMessageEvent):
 async def main():
     log.info("Бот запущен")
     async with bot:
-        me = await bot.get_self()
+        try:
+            me = await bot.get_self()
+        except APIError as e:
+            log.error(
+                "Сервер %s отклонил токен: %s\n"
+                "Проверь: 1) это токен именно этого бота; 2) бот создан на том же сервере "
+                "(BOT_API_URL); 3) токен не отозван и скопирован без кавычек и переносов.",
+                BOT_API_URL, e,
+            )
+            raise SystemExit(1) from e
         log.info("Подключён как %s (%s)", me.nick, me.user_id)
         log.info("Ожидание сообщений")
         await bot.start_polling(dp)
