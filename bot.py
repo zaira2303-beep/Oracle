@@ -1,101 +1,200 @@
 import asyncio
-import random
+import json
+import logging
 import os
-from vk_teams_async_bot import Bot, Dispatcher, NewMessageEvent, MemoryStorage, FSMContext
-from vk_teams_async_bot import CommandFilter, TextFilter, StateFilter
-from vk_teams_async_bot import StatesGroup, State
+import random
+
+from vk_teams_async_bot import (
+    Bot,
+    CommandFilter,
+    Dispatcher,
+    FSMContext,
+    MemoryStorage,
+    NewMessageEvent,
+    State,
+    StateFilter,
+    StatesGroup,
+)
 
 from predictions import PREDICTIONS
 
-# --- НАСТРОЙКИ ---
-BOT_TOKEN = os.getenv("BOT_TOKEN")"
-API_URL = "https://api.internal.myteam.mail.ru/bot/v1" 
-IMAGES_FOLDER = "images"
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+log = logging.getLogger("oracle")
 
-# Инициализация
-bot = Bot(bot_token=TOKEN, url=API_URL)
-storage = MemoryStorage()
-dp = Dispatcher(storage=storage)
-used_users = set() 
+# --- НАСТРОЙКИ ---
+IMAGES_FOLDER = "images"
+USED_USERS_FILE = "used_users.json"
+
+
+def load_dotenv(path=".env"):
+    """Минимальная загрузка .env без внешних зависимостей."""
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+    except OSError as e:
+        log.warning("Не удалось прочитать %s: %s", path, e)
+
+
+def normalize_api_url(url):
+    """Библиотека сама добавляет /bot/v1, поэтому убираем хвост из URL."""
+    if not url:
+        return url
+    url = url.rstrip("/")
+    if url.endswith("/bot/v1"):
+        url = url[: -len("/bot/v1")]
+    return url
+
+
+load_dotenv()
+
+BOT_TOKEN = (os.getenv("BOT_TOKEN") or "").strip()
+if not BOT_TOKEN:
+    raise SystemExit(
+        "BOT_TOKEN не задан: добавь BOT_TOKEN=<токен Метабота> в .env "
+        "или передай его переменной окружения контейнера."
+    )
+
+BOT_API_URL = normalize_api_url(os.getenv("BOT_API_URL") or "https://myteam.mail.ru")
+
+bot = Bot(bot_token=BOT_TOKEN, url=BOT_API_URL)
+dp = Dispatcher(storage=MemoryStorage())
+
+# --- СОСТОЯНИЕ «УЖЕ ГАДАЛИ» (переживает рестарт) ---
+def load_used_users():
+    try:
+        with open(USED_USERS_FILE, encoding="utf-8") as f:
+            return set(json.load(f))
+    except FileNotFoundError:
+        return set()
+    except (OSError, ValueError) as e:
+        log.warning("Не удалось прочитать %s: %s", USED_USERS_FILE, e)
+        return set()
+
+
+def save_used_users(users):
+    try:
+        with open(USED_USERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(sorted(users), f, ensure_ascii=False)
+    except OSError as e:
+        log.warning("Не удалось сохранить %s: %s", USED_USERS_FILE, e)
+
+
+used_users = load_used_users()
+
 
 class PredictionStates(StatesGroup):
     waiting_for_number = State()
 
+
 def get_random_image(folder_path):
-    valid_extensions = ('.png', '.jpg', '.jpeg', '.gif', '.webp')
-    if not os.path.exists(folder_path):
+    valid_extensions = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+    if not os.path.isdir(folder_path):
+        log.warning("Папка с картинками не найдена: %s", folder_path)
         return None
     all_images = [
-        os.path.join(folder_path, f) 
-        for f in os.listdir(folder_path) 
-        if f.lower().endswith(valid_extensions)
+        os.path.join(folder_path, name)
+        for name in os.listdir(folder_path)
+        if name.lower().endswith(valid_extensions)
     ]
     if not all_images:
+        log.warning("В папке %s нет изображений", folder_path)
         return None
     return random.choice(all_images)
 
-# Обработчик команды /start
+
 @dp.message(CommandFilter("start"))
 async def cmd_start(event: NewMessageEvent, fsm_context: FSMContext):
-    user_id = event.chat.chat_id
-    
+    user_id = event.from_.user_id
+    log.info("/start от %s (chat_id=%s)", user_id, event.chat.chat_id)
+
     if user_id in used_users:
         await bot.send_text(
-            chat_id=user_id, 
-            text="Твое будущее уже предсказано. Второй раз судьба не открывает свои тайны."
+            chat_id=event.chat.chat_id,
+            text="Твое будущее уже предсказано. Второй раз судьба не открывает свои тайны.",
         )
         return
 
     await fsm_context.set_state(PredictionStates.waiting_for_number)
     await bot.send_text(
-        chat_id=user_id, 
-        text="Привет! Я — древний оракул. Загадай любое число от 1 до 100, и я приоткрою завесу твоего будущего."
+        chat_id=event.chat.chat_id,
+        text="Привет! Я — древний оракул. Загадай любое число от 1 до 100, и я приоткрою завесу твоего будущего.",
     )
 
-# Обработчик текстовых сообщений (чисел)
-@dp.message(TextFilter(), StateFilter(PredictionStates.waiting_for_number))
+
+@dp.message(StateFilter(PredictionStates.waiting_for_number))
 async def process_number(event: NewMessageEvent, fsm_context: FSMContext):
-    user_id = event.chat.chat_id
-    text = event.text.strip()
+    user_id = event.from_.user_id
+    text = (event.text or "").strip()
 
     if user_id in used_users:
-        await bot.send_text(chat_id=user_id, text="Твое будущее уже предсказано.")
+        await bot.send_text(chat_id=event.chat.chat_id, text="Твое будущее уже предсказано.")
         return
 
     try:
         number = int(text)
-        if not (1 <= number <= 100):
-            await bot.send_text(chat_id=user_id, text="Пожалуйста, введи число от 1 до 100.")
-            return
+        if not 1 <= number <= 100:
+            raise ValueError
     except ValueError:
-        await bot.send_text(chat_id=user_id, text="Это не похоже на число. Попробуй еще раз (от 1 до 100).")
+        await bot.send_text(
+            chat_id=event.chat.chat_id,
+            text="Пожалуйста, введи число от 1 до 100.",
+        )
         return
 
     prediction_text = random.choice(PREDICTIONS)
     image_path = get_random_image(IMAGES_FOLDER)
 
     if image_path is None:
-        await bot.send_text(chat_id=user_id, text=f"🔮 Твое предсказание: {prediction_text}")
+        await bot.send_text(
+            chat_id=event.chat.chat_id, text=f"🔮 Твое предсказание: {prediction_text}"
+        )
     else:
         try:
-            # В новой версии параметр для файла обычно 'file'
             await bot.send_file(
-                chat_id=user_id,
+                chat_id=event.chat.chat_id,
                 file=image_path,
-                caption=f"🔮 Твое предсказание: {prediction_text}"
+                caption=f"🔮 Твое предсказание: {prediction_text}",
             )
         except Exception as e:
-            print(f"Ошибка при отправке файла: {e}")
-            await bot.send_text(chat_id=user_id, text=f"🔮 Твое предсказание: {prediction_text}")
+            log.warning("Не удалось отправить файл %s: %s", image_path, e)
+            await bot.send_text(
+                chat_id=event.chat.chat_id, text=f"🔮 Твое предсказание: {prediction_text}"
+            )
 
     used_users.add(user_id)
+    save_used_users(used_users)
     await fsm_context.clear()
 
+
+@dp.message(StateFilter(None))
+async def ask_to_start(event: NewMessageEvent):
+    await bot.send_text(
+        chat_id=event.chat.chat_id,
+        text="Напиши /start, чтобы узнать предсказание.",
+    )
+
+
 async def main():
-    print("Бот запущен...")
-    # В новой версии используется контекстный менеджер для запуска
+    log.info("Бот запущен")
     async with bot:
+        me = await bot.get_self()
+        log.info("Подключён как %s (%s)", me.nick, me.user_id)
+        log.info("Ожидание сообщений")
         await bot.start_polling(dp)
 
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit) as e:
+        log.error("Остановка: %s", e)
