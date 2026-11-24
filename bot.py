@@ -4,18 +4,13 @@ import logging
 import os
 import random
 
-from vk_teams_async_bot import (
-    Bot,
-    CommandFilter,
-    Dispatcher,
-    FSMContext,
-    MemoryStorage,
-    NewMessageEvent,
-    State,
-    StateFilter,
-    StatesGroup,
-)
-from vk_teams_async_bot.errors import APIError
+from vkworkspace import Bot, Dispatcher, Router
+from vkworkspace.exceptions import InvalidToken, VKTeamsAPIError
+from vkworkspace.filters import Command
+from vkworkspace.filters.state import StateFilter
+from vkworkspace.fsm import FSMContext, State, StatesGroup
+from vkworkspace.fsm.storage.memory import MemoryStorage
+from vkworkspace.types import InputFile, Message
 
 from predictions import PREDICTIONS
 
@@ -25,13 +20,12 @@ logging.basicConfig(
 )
 log = logging.getLogger("oracle")
 
-# --- НАСТРОЙКИ ---
 IMAGES_FOLDER = "images"
 USED_USERS_FILE = "used_users.json"
+DEFAULT_API_URL = "https://api.internal.myteam.mail.ru"
 
 
 def load_dotenv(path=".env"):
-    """Минимальная загрузка .env без внешних зависимостей."""
     if not os.path.exists(path):
         return
     try:
@@ -46,50 +40,24 @@ def load_dotenv(path=".env"):
         log.warning("Не удалось прочитать %s: %s", path, e)
 
 
-def normalize_api_url(url):
-    """Библиотека сама добавляет /bot/v1, поэтому убираем хвост из URL."""
-    if not url:
-        return url
-    url = url.rstrip("/")
-    if url.endswith("/bot/v1"):
-        url = url[: -len("/bot/v1")]
-    return url
-
-
 def clean_env_value(value):
-    """Убирает кавычки и пробелы, которые попадают из .env / docker-compose."""
     value = (value or "").strip()
     while len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
         value = value[1:-1].strip()
     return value.replace("\n", "").replace("\r", "").strip()
 
 
-load_dotenv()
+def build_api_url(raw):
+    """vkworkspace ждёт базовый URL вместе с /bot/v1."""
+    url = clean_env_value(raw) or DEFAULT_API_URL
+    url = url.rstrip("/")
+    if url.endswith("/bot/v1"):
+        return url
+    if url.endswith("/botapi"):
+        url = url[: -len("/botapi")]
+    return url + "/bot/v1"
 
-BOT_TOKEN = clean_env_value(os.getenv("BOT_TOKEN"))
-if not BOT_TOKEN:
-    raise SystemExit(
-        "BOT_TOKEN не задан: добавь BOT_TOKEN=<токен Метабота> в .env "
-        "или передай его переменной окружения контейнера."
-    )
-if BOT_TOKEN == "ВАШ_ТОКЕН_БОТА" or len(BOT_TOKEN) < 20:
-    raise SystemExit(
-        "BOT_TOKEN выглядит как заглушка или обрезан "
-        f"(длина {len(BOT_TOKEN)}, ожидается полный токен из Метабота)."
-    )
 
-BOT_API_URL = normalize_api_url(
-    clean_env_value(os.getenv("BOT_API_URL")) or "https://api.internal.myteam.mail.ru"
-)
-
-bot = Bot(bot_token=BOT_TOKEN, url=BOT_API_URL)
-log.info(
-    "Сервер: %s, токен: длина %d, начинается на %s…",
-    BOT_API_URL, len(BOT_TOKEN), BOT_TOKEN[:4],
-)
-dp = Dispatcher(storage=MemoryStorage())
-
-# --- СОСТОЯНИЕ «УЖЕ ГАДАЛИ» (переживает рестарт) ---
 def load_used_users():
     try:
         with open(USED_USERS_FILE, encoding="utf-8") as f:
@@ -109,13 +77,6 @@ def save_used_users(users):
         log.warning("Не удалось сохранить %s: %s", USED_USERS_FILE, e)
 
 
-used_users = load_used_users()
-
-
-class PredictionStates(StatesGroup):
-    waiting_for_number = State()
-
-
 def get_random_image(folder_path):
     valid_extensions = (".png", ".jpg", ".jpeg", ".gif", ".webp")
     if not os.path.isdir(folder_path):
@@ -132,32 +93,55 @@ def get_random_image(folder_path):
     return random.choice(all_images)
 
 
-@dp.message(CommandFilter("start"))
-async def cmd_start(event: NewMessageEvent, bot: Bot, fsm_context: FSMContext):
-    user_id = event.from_.user_id
-    log.info("/start от %s (chat_id=%s)", user_id, event.chat.chat_id)
+load_dotenv()
+
+BOT_TOKEN = clean_env_value(os.getenv("BOT_TOKEN"))
+if not BOT_TOKEN:
+    raise SystemExit(
+        "BOT_TOKEN не задан: добавь BOT_TOKEN=<токен Метабота> в .env "
+        "или передай его переменной окружения контейнера."
+    )
+if BOT_TOKEN == "ВАШ_ТОКЕН_БОТА" or len(BOT_TOKEN) < 20:
+    raise SystemExit(
+        "BOT_TOKEN выглядит как заглушка или обрезан "
+        f"(длина {len(BOT_TOKEN)}, ожидается полный токен из Метабота)."
+    )
+
+BOT_API_URL = build_api_url(os.getenv("BOT_API_URL"))
+used_users = load_used_users()
+
+router = Router(name="oracle")
+
+
+class PredictionStates(StatesGroup):
+    waiting_for_number = State()
+
+
+@router.message(Command("start"))
+async def cmd_start(message: Message, state: FSMContext) -> None:
+    user_id = message.from_user.user_id if message.from_user else message.chat.chat_id
+    log.info("/start от %s (chat_id=%s)", user_id, message.chat.chat_id)
 
     if user_id in used_users:
-        await bot.send_text(
-            chat_id=event.chat.chat_id,
-            text="Твое будущее уже предсказано. Второй раз судьба не открывает свои тайны.",
+        await message.answer(
+            "Твое будущее уже предсказано. Второй раз судьба не открывает свои тайны."
         )
         return
 
-    await fsm_context.set_state(PredictionStates.waiting_for_number)
-    await bot.send_text(
-        chat_id=event.chat.chat_id,
-        text="Привет! Я — древний оракул. Загадай любое число от 1 до 100, и я приоткрою завесу твоего будущего.",
+    await state.set_state(PredictionStates.waiting_for_number)
+    await message.answer(
+        "Привет! Я — древний оракул. Загадай любое число от 1 до 100, "
+        "и я приоткрою завесу твоего будущего."
     )
 
 
-@dp.message(StateFilter(PredictionStates.waiting_for_number))
-async def process_number(event: NewMessageEvent, bot: Bot, fsm_context: FSMContext):
-    user_id = event.from_.user_id
-    text = (event.text or "").strip()
+@router.message(StateFilter(PredictionStates.waiting_for_number))
+async def process_number(message: Message, state: FSMContext) -> None:
+    user_id = message.from_user.user_id if message.from_user else message.chat.chat_id
+    text = (message.text or "").strip()
 
     if user_id in used_users:
-        await bot.send_text(chat_id=event.chat.chat_id, text="Твое будущее уже предсказано.")
+        await message.answer("Твое будущее уже предсказано.")
         return
 
     try:
@@ -165,51 +149,50 @@ async def process_number(event: NewMessageEvent, bot: Bot, fsm_context: FSMConte
         if not 1 <= number <= 100:
             raise ValueError
     except ValueError:
-        await bot.send_text(
-            chat_id=event.chat.chat_id,
-            text="Пожалуйста, введи число от 1 до 100.",
-        )
+        await message.answer("Пожалуйста, введи число от 1 до 100.")
         return
 
     prediction_text = random.choice(PREDICTIONS)
+    caption = f"🔮 Твое предсказание: {prediction_text}"
     image_path = get_random_image(IMAGES_FOLDER)
 
     if image_path is None:
-        await bot.send_text(
-            chat_id=event.chat.chat_id, text=f"🔮 Твое предсказание: {prediction_text}"
-        )
+        await message.answer(caption)
     else:
         try:
-            await bot.send_file(
-                chat_id=event.chat.chat_id,
-                file=image_path,
-                caption=f"🔮 Твое предсказание: {prediction_text}",
-            )
+            await message.answer_file(file=InputFile(image_path), caption=caption)
         except Exception as e:
             log.warning("Не удалось отправить файл %s: %s", image_path, e)
-            await bot.send_text(
-                chat_id=event.chat.chat_id, text=f"🔮 Твое предсказание: {prediction_text}"
-            )
+            await message.answer(caption)
 
     used_users.add(user_id)
     save_used_users(used_users)
-    await fsm_context.clear()
+    await state.clear()
 
 
-@dp.message(StateFilter(None))
-async def ask_to_start(event: NewMessageEvent, bot: Bot):
-    await bot.send_text(
-        chat_id=event.chat.chat_id,
-        text="Напиши /start, чтобы узнать предсказание.",
-    )
+@router.message(StateFilter(None))
+async def ask_to_start(message: Message) -> None:
+    await message.answer("Напиши /start, чтобы узнать предсказание.")
+
+
+@router.error()
+async def on_error(event, error: Exception) -> None:
+    log.exception("Ошибка обработки события: %s", error)
 
 
 async def main():
-    log.info("Бот запущен")
-    async with bot:
+    bot = Bot(token=BOT_TOKEN, api_url=BOT_API_URL)
+    dp = Dispatcher(storage=MemoryStorage(), session_timeout=3600)
+    dp.include_router(router)
+
+    @dp.on_startup
+    async def on_startup():
+        log.info("Бот запущен")
+        log.info("Сервер: %s, токен: длина %d, начинается на %s…",
+                 BOT_API_URL, len(BOT_TOKEN), BOT_TOKEN[:4])
         try:
-            me = await bot.get_self()
-        except APIError as e:
+            me = await bot.get_me()
+        except (InvalidToken, VKTeamsAPIError) as e:
             log.error(
                 "Сервер %s отклонил токен: %s\n"
                 "Проверь: 1) это токен именно этого бота; 2) бот создан на том же сервере "
@@ -219,7 +202,8 @@ async def main():
             raise SystemExit(1) from e
         log.info("Подключён как %s (%s)", me.nick, me.user_id)
         log.info("Ожидание сообщений")
-        await bot.start_polling(dp)
+
+    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
