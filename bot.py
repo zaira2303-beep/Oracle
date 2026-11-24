@@ -23,7 +23,8 @@ log = logging.getLogger("oracle")
 IMAGES_FOLDER = "images"
 USED_USERS_FILE = "used_users.json"
 
-GREETING_EMOJI = ["🔮", "✨", "🌟", "🎁", "🍀", "🪄", "💫", "🌠"]
+EMOJI_POOL = ["🔮", "✨", "🌟", "🎁", "🍀", "🪄", "💫", "🌠"]
+GREETING_EMOJI = EMOJI_POOL
 
 
 def load_dotenv(path=".env"):
@@ -118,14 +119,26 @@ class PredictionStates(StatesGroup):
     waiting_for_number = State()
 
 
-async def deliver_prediction(message: Message, user_id: str) -> None:
-    item = random.choice(PREDICTIONS)
+def unpack_prediction(item):
     if isinstance(item, dict):
-        emoji = item.get("emoji", "🔮")
-        prediction_text = item["text"]
+        prediction_text = str(item.get("text", "")).strip()
+        emoji = str(item.get("emoji") or "").strip()
     else:
-        emoji = "🔮"
-        prediction_text = str(item)
+        prediction_text = str(item).strip()
+        emoji = ""
+
+    if not emoji:
+        for candidate in EMOJI_POOL:
+            if prediction_text.startswith(candidate):
+                emoji = candidate
+                prediction_text = prediction_text[len(candidate):].strip()
+                break
+
+    return emoji or EMOJI_POOL[0], prediction_text
+
+
+async def deliver_prediction(message: Message, user_id: str) -> None:
+    emoji, prediction_text = unpack_prediction(random.choice(PREDICTIONS))
 
     caption = f"{emoji} Твое предсказание: {prediction_text}"
     image_path = get_random_image(IMAGES_FOLDER)
