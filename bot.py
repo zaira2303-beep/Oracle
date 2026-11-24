@@ -8,8 +8,8 @@ from vk_teams_async_bot import StatesGroup, State
 from predictions import PREDICTIONS
 
 # --- НАСТРОЙКИ ---
-TOKEN = "ВАШ_ТОКЕН_БОТА"
-API_URL = "https://myteam.mail.ru" 
+BOT_TOKEN = os.getenv("BOT_TOKEN")"
+API_URL = "https://api.internal.myteam.mail.ru/bot/v1" 
 IMAGES_FOLDER = "images"
 
 # Инициализация
