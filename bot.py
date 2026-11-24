@@ -23,6 +23,9 @@ log = logging.getLogger("oracle")
 IMAGES_FOLDER = "images"
 USED_USERS_FILE = "used_users.json"
 
+PREDICTION_EMOJI = ["🔮", "✨", "🌟", "🎁", "🍀", "🪄", "💫", "🌠"]
+GREETING_EMOJI = ["👋", "🔮", "✨", "🌟"]
+
 
 def load_dotenv(path=".env"):
     if not os.path.exists(path):
@@ -118,7 +121,7 @@ class PredictionStates(StatesGroup):
 
 async def deliver_prediction(message: Message, user_id: str) -> None:
     prediction_text = random.choice(PREDICTIONS)
-    caption = f"🔮 Твое предсказание: {prediction_text}"
+    caption = f"{random.choice(PREDICTION_EMOJI)} Твое предсказание: {prediction_text}"
     image_path = get_random_image(IMAGES_FOLDER)
 
     if image_path is None:
@@ -143,8 +146,8 @@ async def start_dialogue(message: Message, state: FSMContext, user_id: str) -> N
 
     await state.set_state(PredictionStates.waiting_for_number)
     await message.answer(
-        "Привет! Я — древний оракул. Загадай любое число от 1 до 100, "
-        "и я приоткрою завесу твоего будущего."
+        f"{random.choice(GREETING_EMOJI)} Привет! Я — древний оракул. "
+        "Загадай любое число от 1 до 100, и я приоткрою завесу твоего будущего."
     )
 
 
