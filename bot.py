@@ -22,7 +22,6 @@ log = logging.getLogger("oracle")
 
 IMAGES_FOLDER = "images"
 USED_USERS_FILE = "used_users.json"
-DEFAULT_API_URL = "https://api.internal.myteam.mail.ru"
 
 
 def load_dotenv(path=".env"):
@@ -49,7 +48,7 @@ def clean_env_value(value):
 
 def build_api_url(raw):
     """vkworkspace ждёт базовый URL вместе с /bot/v1."""
-    url = clean_env_value(raw) or DEFAULT_API_URL
+    url = clean_env_value(raw) or "https://api.internal.myteam.mail.ru"
     url = url.rstrip("/")
     if url.endswith("/bot/v1"):
         return url
@@ -117,11 +116,25 @@ class PredictionStates(StatesGroup):
     waiting_for_number = State()
 
 
-@router.message(Command("start"))
-async def cmd_start(message: Message, state: FSMContext) -> None:
-    user_id = message.from_user.user_id if message.from_user else message.chat.chat_id
-    log.info("/start от %s (chat_id=%s)", user_id, message.chat.chat_id)
+async def deliver_prediction(message: Message, user_id: str) -> None:
+    prediction_text = random.choice(PREDICTIONS)
+    caption = f"🔮 Твое предсказание: {prediction_text}"
+    image_path = get_random_image(IMAGES_FOLDER)
 
+    if image_path is None:
+        await message.answer(caption)
+    else:
+        try:
+            await message.answer_file(file=InputFile(image_path), caption=caption)
+        except Exception as e:
+            log.warning("Не удалось отправить файл %s: %s", image_path, e)
+            await message.answer(caption)
+
+    used_users.add(user_id)
+    save_used_users(used_users)
+
+
+async def start_dialogue(message: Message, state: FSMContext, user_id: str) -> None:
     if user_id in used_users:
         await message.answer(
             "Твое будущее уже предсказано. Второй раз судьба не открывает свои тайны."
@@ -133,6 +146,13 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         "Привет! Я — древний оракул. Загадай любое число от 1 до 100, "
         "и я приоткрою завесу твоего будущего."
     )
+
+
+@router.message(Command("start"))
+async def cmd_start(message: Message, state: FSMContext) -> None:
+    user_id = message.from_user.user_id if message.from_user else message.chat.chat_id
+    log.info("/start от %s (chat_id=%s)", user_id, message.chat.chat_id)
+    await start_dialogue(message, state, user_id)
 
 
 @router.message(StateFilter(PredictionStates.waiting_for_number))
@@ -152,27 +172,22 @@ async def process_number(message: Message, state: FSMContext) -> None:
         await message.answer("Пожалуйста, введи число от 1 до 100.")
         return
 
-    prediction_text = random.choice(PREDICTIONS)
-    caption = f"🔮 Твое предсказание: {prediction_text}"
-    image_path = get_random_image(IMAGES_FOLDER)
-
-    if image_path is None:
-        await message.answer(caption)
-    else:
-        try:
-            await message.answer_file(file=InputFile(image_path), caption=caption)
-        except Exception as e:
-            log.warning("Не удалось отправить файл %s: %s", image_path, e)
-            await message.answer(caption)
-
-    used_users.add(user_id)
-    save_used_users(used_users)
+    await deliver_prediction(message, user_id)
     await state.clear()
 
 
 @router.message(StateFilter(None))
-async def ask_to_start(message: Message) -> None:
-    await message.answer("Напиши /start, чтобы узнать предсказание.")
+async def first_contact(message: Message, state: FSMContext) -> None:
+    """Любое первое сообщение пользователя запускает диалог — /start не обязателен."""
+    user_id = message.from_user.user_id if message.from_user else message.chat.chat_id
+    text = (message.text or "").strip()
+
+    if user_id not in used_users and text.isdigit() and 1 <= int(text) <= 100:
+        log.info("Первое сообщение числом %s от %s — сразу выдаю предсказание", text, user_id)
+        await deliver_prediction(message, user_id)
+        return
+
+    await start_dialogue(message, state, user_id)
 
 
 @router.error()
