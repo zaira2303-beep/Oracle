@@ -23,7 +23,6 @@ log = logging.getLogger("oracle")
 IMAGES_FOLDER = "images"
 USED_USERS_FILE = "used_users.json"
 
-PREDICTION_EMOJI = ["🔮", "✨", "🌟", "🎁", "🍀", "🪄", "💫", "🌠"]
 GREETING_EMOJI = ["👋", "🔮", "✨", "🌟"]
 
 
@@ -120,8 +119,15 @@ class PredictionStates(StatesGroup):
 
 
 async def deliver_prediction(message: Message, user_id: str) -> None:
-    prediction_text = random.choice(PREDICTIONS)
-    caption = f"{random.choice(PREDICTION_EMOJI)} Твое предсказание: {prediction_text}"
+    item = random.choice(PREDICTIONS)
+    if isinstance(item, dict):
+        emoji = item.get("emoji", "🔮")
+        prediction_text = item["text"]
+    else:
+        emoji = "🔮"
+        prediction_text = str(item)
+
+    caption = f"{emoji} Твое предсказание: {prediction_text}"
     image_path = get_random_image(IMAGES_FOLDER)
 
     if image_path is None:
