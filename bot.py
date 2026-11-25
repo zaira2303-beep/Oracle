@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import random
+from datetime import date
 
 from vkworkspace import Bot, Dispatcher, Router
 from vkworkspace.exceptions import InvalidToken, VKTeamsAPIError
@@ -60,23 +61,51 @@ def build_api_url(raw):
     return url + "/bot/v1"
 
 
+def today_key():
+    """Текущая дата — ключ для лимита «одно предсказание в сутки»."""
+    return date.today().isoformat()
+
+
 def load_used_users():
+    """История предсказаний вида {"<user_id>": "<дата>"}."""
     try:
         with open(USED_USERS_FILE, encoding="utf-8") as f:
-            return set(json.load(f))
+            data = json.load(f)
     except FileNotFoundError:
-        return set()
+        return {}
     except (OSError, ValueError) as e:
         log.warning("Не удалось прочитать %s: %s", USED_USERS_FILE, e)
-        return set()
+        return {}
+
+    if isinstance(data, dict):
+        return {str(user_id): str(day) for user_id, day in data.items()}
+
+    if isinstance(data, list):
+        log.info(
+            "Конвертирую %s из старого формата (список) в формат 'id -> дата'",
+            USED_USERS_FILE,
+        )
+        return {str(user_id): "1970-01-01" for user_id in data}
+
+    log.warning("Неизвестный формат %s, начинаю с пустой истории", USED_USERS_FILE)
+    return {}
 
 
 def save_used_users(users):
     try:
         with open(USED_USERS_FILE, "w", encoding="utf-8") as f:
-            json.dump(sorted(users), f, ensure_ascii=False)
+            json.dump(users, f, ensure_ascii=False, indent=2, sort_keys=True)
     except OSError as e:
         log.warning("Не удалось сохранить %s: %s", USED_USERS_FILE, e)
+
+
+def has_prediction_today(users, user_id):
+    return users.get(str(user_id)) == today_key()
+
+
+def remember_prediction(users, user_id):
+    users[str(user_id)] = today_key()
+    save_used_users(users)
 
 
 def get_random_image(folder_path):
@@ -152,14 +181,14 @@ async def deliver_prediction(message: Message, user_id: str) -> None:
             log.warning("Не удалось отправить файл %s: %s", image_path, e)
             await message.answer(caption)
 
-    used_users.add(user_id)
-    save_used_users(used_users)
+    remember_prediction(used_users, user_id)
 
 
 async def start_dialogue(message: Message, state: FSMContext, user_id: str) -> None:
-    if user_id in used_users:
+    if has_prediction_today(used_users, user_id):
         await message.answer(
-            "🔮 Твое будущее уже предсказано. Второй раз судьба не открывает свои тайны."
+            "🔮 Ты уже получил предсказание сегодня. "
+            "Судьба откроет новые тайны завтра — возвращайся!"
         )
         return
 
@@ -183,8 +212,10 @@ async def process_number(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.user_id if message.from_user else message.chat.chat_id
     text = (message.text or "").strip()
 
-    if user_id in used_users:
-        await message.answer("🔮 Твое будущее уже предсказано.")
+    if has_prediction_today(used_users, user_id):
+        await message.answer(
+            "🔮 Ты уже получил предсказание сегодня. Возвращайся завтра."
+        )
         return
 
     try:
@@ -205,7 +236,11 @@ async def first_contact(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.user_id if message.from_user else message.chat.chat_id
     text = (message.text or "").strip()
 
-    if user_id not in used_users and text.isdigit() and 1 <= int(text) <= 100:
+    if (
+        not has_prediction_today(used_users, user_id)
+        and text.isdigit()
+        and 1 <= int(text) <= 100
+    ):
         log.info("Первое сообщение числом %s от %s — сразу выдаю предсказание", text, user_id)
         await deliver_prediction(message, user_id)
         return
